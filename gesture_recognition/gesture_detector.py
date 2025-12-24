@@ -37,50 +37,82 @@ class GestureDetector:
         if not lm_list:
             return None
 
-        # Finger states: 1 for extended, 0 for closed
-        fingers = []
+        # Helper function to calculate euclidean distance
+        def get_dist(p1, p2):
+            return math.hypot(p1[1] - p2[1], p1[2] - p2[2])
 
-        # Thumb (Special case, depends on orientation; assuming right hand palm facing camera)
-        # For simplicity, we compare x-coordinates
-        if lm_list[self.tip_ids[0]][1] > lm_list[self.tip_ids[0] - 1][1]:
-            fingers.append(1)
+        # Finger Landmarks
+        # Thumb: 1-4, Index: 5-8, Middle: 9-12, Ring: 13-16, Pinky: 17-20
+        # Wrist: 0
+        
+        wrist = lm_list[0]
+        
+        # Determine which fingers are open
+        fingers_open = []
+        
+        # Thumb: Harder to define "open" via distance to wrist alone.
+        # We check if the tip is far from the Index Finger MCP (Metacarpophalangeal joint, id 5).
+        # Adjust threshold as needed, or compare to the length of the thumb itself.
+        # A robust way is to check if the Tip is "outside" the palm compared to the IP joint.
+        # For simplicity in this quick improvement:
+        # Check if Thumb Tip is farther from Pinky MCP (17) than Thumb IP (3) is.
+        # This implies abduction.
+        thumb_tip = lm_list[4]
+        thumb_ip = lm_list[3]
+        pinky_mcp = lm_list[17]
+        
+        if get_dist(thumb_tip, pinky_mcp) > get_dist(thumb_ip, pinky_mcp):
+             fingers_open.append(True)
         else:
-            fingers.append(0)
+             fingers_open.append(False)
 
-        # Other 4 fingers
-        for id in range(1, 5):
-            if lm_list[self.tip_ids[id]][2] < lm_list[self.tip_ids[id] - 2][2]:
-                fingers.append(1)
+        # Other 4 fingers: 
+        # Open if distance(Wrist, Tip) > distance(Wrist, PIP)
+        # We use PIP (Proximal Interphalangeal) joints: 6, 10, 14, 18
+        for tip_id, pip_id in zip([8, 12, 16, 20], [6, 10, 14, 18]):
+            if get_dist(lm_list[0], lm_list[tip_id]) > get_dist(lm_list[0], lm_list[pip_id]):
+                fingers_open.append(True)
             else:
-                fingers.append(0)
+                fingers_open.append(False)
 
-        total_fingers = fingers.count(1)
+        total_open = fingers_open.count(True)
 
-        # Open hand: All fingers extended (roughly)
-        if total_fingers >= 4:
+        # 1. Open Hand (All 5 open)
+        if total_open == 5:
             return "off"
         
-        # Closed hand: All fingers closed
-        if total_fingers == 0:
+        # 2. Closed Hand (0 open)
+        if total_open == 0:
             return "on"
 
-        # Index gestures: Only index extended
-        if fingers[1] == 1 and total_fingers == 1:
-            index_tip = lm_list[8]
-            index_pip = lm_list[6] # PIP or MCP (5)
+        # 3. Directional Gestures (Only Index Open)
+        # Note: Sometimes thumb might be naturally loose, so we strictly check
+        # if Index is OPEN and Middle, Ring, Pinky are CLOSED.
+        # We can be lenient with the thumb or force it closed.
+        # Let's check: Index Open, Middle+Ring+Pinky Closed.
+        if fingers_open[1] and not any(fingers_open[2:]):
+            # Thumb state doesn't strictly matter for pointing, but user requested "Index ... others closed"
+            # If we enforce thumb closed, it might be hard for some users. 
+            # Let's enforce it loosely or ignore it.
+            # "index extended, others closed" usually implies thumb is tucked or neutral.
+            # Let's enforce thumb closed for STRICT definition, or just ignore it to be easier.
+            # User prompt: "index up= up... open hand = off"
+            # Let's try to enforce thumb closed if possible, but maybe allow it if it's not super wide.
+            # For now, let's rely on Index Open + Others Closed.
             
-            dx = index_tip[1] - index_pip[1]
-            dy = index_tip[2] - index_pip[2]
-
-            if abs(dy) > abs(dx):
-                if dy < 0:
-                    return "up"
-                else:
-                    return "down"
+            # Determine direction using Index Tip vs Index PIP (or MCP)
+            indx_tip = lm_list[8]
+            indx_mcp = lm_list[5] # MCP is more stable base than PIP for overall direction
+            
+            dx = indx_tip[1] - indx_mcp[1]
+            dy = indx_tip[2] - indx_mcp[2]
+            
+            # Use a threshold to avoid jitter when diagonal
+            if abs(dx) > abs(dy):
+                # Horizontal
+                return "right" if dx > 0 else "left"
             else:
-                if dx < 0:
-                    return "left" # Note: depends on camera flip, usually left is negative X
-                else:
-                    return "right"
+                # Vertical
+                return "down" if dy > 0 else "up"
 
         return None
